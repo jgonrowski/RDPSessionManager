@@ -21,9 +21,7 @@
 #define IDC_BUTTON_PROMPT_CREDENTIALS   1009
 #define IDC_BUTTON2                     1010
 #define IDC_BUTTON_CLEAR_CREDENTIALS    1010
-#define IDC_STATIC_COPYWRITE            1011
 #define IDC_STATIC_INFODICT             1011
-#define cc                              1011
 #define IDM_RDPSESSIONMANAGER_LOGOFF    32773
 #define ID_FILE_PREFERENCES             32774
 #define ID_FILE_EXIT                    32775
@@ -36,7 +34,7 @@
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NO_MFC                     1
-#define _APS_NEXT_RESOURCE_VALUE        135
+#define _APS_NEXT_RESOURCE_VALUE        134
 #define _APS_NEXT_COMMAND_VALUE         32780
 #define _APS_NEXT_CONTROL_VALUE         1012
 #define _APS_NEXT_SYMED_VALUE           110

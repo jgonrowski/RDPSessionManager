@@ -11,6 +11,7 @@ using json = nlohmann::json;
 struct SessionInfo {
 	LPWSTR UserName;
 	LPWSTR SessionName;
+	std::wstring SessionState;
 	DWORD SessionID;
 };
 
@@ -21,6 +22,7 @@ std::vector<SessionInfo> sessions;
 std::wstring address;
 DWORD sessionId;
 wchar_t sessionIdData[MAX_PATH];
+wchar_t sessionStateData[MAX_PATH];
 STARTUPINFO cif = { 0 };
 PROCESS_INFORMATION pi = { 0 };
 
@@ -28,8 +30,8 @@ wchar_t historyFile[MAX_PATH];
 
 std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
 
-BOOL CALLBACK ServerPromptDialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
-BOOL CALLBACK MainDialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+INT_PTR CALLBACK ServerPromptDialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+INT_PTR CALLBACK MainDialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 json settings;
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
@@ -52,16 +54,26 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	return DialogBox(hInstance, MAKEINTRESOURCE(IDD_PREFERENCES), NULL, ServerPromptDialogProc);
 }
 
+void LoadCredentials(HWND dlg) {
+	PCREDENTIALW creds;
+	HWND serverAddressInput = GetDlgItem(dlg, IDC_SERVER_ADDRESS);
+	wchar_t addressStr[MAX_PATH];
+	GetWindowText(serverAddressInput, addressStr, MAX_PATH);
+	HWND credentialsInput = GetDlgItem(dlg, IDC_EDIT_CREDENTIALS);
+	if (CredRead(addressStr, CRED_TYPE_DOMAIN_PASSWORD, 0, &creds)) {		
+		SetWindowText(credentialsInput, creds->UserName);
+	}
+	else {
+		SetWindowText(credentialsInput, L"");
+	}
+}
+
 void LoadHistory(HWND serverListDialog) {
 	if (settings["last_connected"].is_string()) {
 		HWND serverAddressInput = GetDlgItem(serverListDialog, IDC_SERVER_ADDRESS);
 		std::wstring serverAddress = converter.from_bytes(settings["last_connected"].get<std::string>());
 		SetWindowText(serverAddressInput, serverAddress.c_str());
-		PCREDENTIALW creds;
-		if (CredRead(serverAddress.c_str(), CRED_TYPE_DOMAIN_PASSWORD, 0, &creds)) {
-			HWND credentialsInput = GetDlgItem(serverListDialog, IDC_EDIT_CREDENTIALS);
-			SetWindowText(credentialsInput, creds->UserName);
-		}
+		LoadCredentials(serverListDialog);
 	}
 	if (settings["no_consent_prompt"].is_number_unsigned()) {
 		CheckDlgButton(serverListDialog, IDC_PREFERENCES_NOPROMPT, settings["no_consent_prompt"].get<UINT>());
@@ -127,19 +139,19 @@ void PromptCredentials(HWND serverListDialog) {
 		);
 		lastError = GetLastError();
 
-		std::wstringstream ss;
 		if (res == FALSE)
 		{
 			MessageBox(NULL, L"Blah", L"CredUnPackAuthenticationBuffer", MB_OK);
 		}
 		else
-		{
-			ss << L"username " << szUserName << std::endl;
-			ss << L"domain " << szDomain << std::endl;
-			ss << L"password " << szPassword << std::endl;
-			DWORD blobsize = wcslen(szPassword); 
+		{			
+			size_t blobsize = wcslen(szPassword);
 
 			CREDENTIAL cred = { 0 };
+			wchar_t addressStr[MAX_PATH];
+			HWND serverAddressInput = GetDlgItem(serverListDialog, IDC_SERVER_ADDRESS);
+			GetWindowText(serverAddressInput, addressStr, MAX_PATH);
+			address = addressStr;
 			wchar_t target[MAX_PATH];
 			wsprintf(target, L"%s", address.c_str());
 			cred.Flags = 0;
@@ -195,14 +207,41 @@ void SetupListView(HWND dlg) {
 	LVCOLUMN listCol = { 0 };
 	listCol.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
 	listCol.pszText = (LPWSTR)L"User";
-	listCol.cx = 300;
+	listCol.cx = 200;
 	SendMessage(listview, LVM_INSERTCOLUMN, 0, (LPARAM)&listCol);
 	listCol.cx = 150;
 	listCol.pszText = (LPWSTR)L"Session ID";
 	SendMessage(listview, LVM_INSERTCOLUMN, 1, (LPARAM)&listCol);
-	listCol.cx = 200;
 	listCol.pszText = (LPWSTR)L"Session name";
 	SendMessage(listview, LVM_INSERTCOLUMN, 2, (LPARAM)&listCol);
+	listCol.pszText = (LPWSTR)L"State";
+	SendMessage(listview, LVM_INSERTCOLUMN, 3, (LPARAM)&listCol);
+}
+
+std::wstring StateToString(WTS_CONNECTSTATE_CLASS state) {
+	switch (state) {
+	case WTSActive:
+		return L"Active";
+	case WTSConnected:
+		return L"Connected";
+	case WTSConnectQuery:
+		return L"Connecting";
+	case WTSShadow:
+		return L"Shadowing";
+	case WTSDisconnected:
+		return L"Disconnected";
+	case WTSIdle:
+		return L"Idle";
+	case WTSListen:
+		return L"Listen";
+	case WTSReset:
+		return L"Reset";
+	case WTSDown:
+		return L"Down";
+	case WTSInit:
+		return L"Initializing";
+	}
+	return L"Unknown";
 }
 
 void RefreshSessions(HWND dlg) {
@@ -224,7 +263,7 @@ void RefreshSessions(HWND dlg) {
 	for (size_t i = 0; i < count; i++) {
 		WTS_SESSION_INFO_1* item = (WTS_SESSION_INFO_1*)&info[i];
 		if (item->pUserName) {
-			SessionInfo session = { item->pUserName, item->pSessionName, item->SessionId };
+			SessionInfo session = { item->pUserName, item->pSessionName, StateToString(item->State), item->SessionId };
 			sessions.push_back(session);
 		}
 	}
@@ -232,6 +271,7 @@ void RefreshSessions(HWND dlg) {
 	for (size_t i = 0; i < sessions.size(); i++) {
 
 		lvI.iItem = i;
+
 		int res = ListView_InsertItem(listview, &lvI);
 	}
 }
@@ -297,6 +337,10 @@ void HandleWM_NOTIFY(HWND hwnd, LPARAM lParam)
 		case 2:
 			plvdi->item.pszText = sessions[plvdi->item.iItem].SessionName;
 			break;
+		case 3:
+			wsprintf(sessionStateData, L"%s", sessions[plvdi->item.iItem].SessionState.c_str());
+			plvdi->item.pszText = sessionStateData;
+			break;
 		default:
 			break;
 		}
@@ -351,58 +395,59 @@ BOOL SetElementTextColor(HWND dlg, WPARAM wParam, LPARAM lParam) {
 	return (BOOL)CreateSolidBrush(RGB(240, 240, 240));
 }
 
-BOOL CALLBACK ServerPromptDialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+INT_PTR CALLBACK ServerPromptDialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	switch (message)
 	{
-		case WM_INITDIALOG:
-			SetElementTextFont(hwnd);
-			LoadHistory(hwnd);
-
-			return TRUE;
-
-		case WM_CTLCOLORSTATIC:
-			return SetElementTextColor(hwnd, wParam, lParam);
-
-			break;
-
-		case WM_COMMAND:
-			if (((HWND)lParam) && (HIWORD(wParam) == BN_CLICKED))
+	case WM_INITDIALOG:
+		SetElementTextFont(hwnd);
+		LoadHistory(hwnd);
+		return TRUE;
+	case WM_CTLCOLORSTATIC:
+		return SetElementTextColor(hwnd, wParam, lParam);
+		break;
+	case WM_COMMAND:
+		if (((HWND)lParam) && (HIWORD(wParam) == BN_CLICKED))
+		{
+			int iMID;
+			iMID = LOWORD(wParam);
+			switch (iMID)
 			{
-				int iMID;
-				iMID = LOWORD(wParam);
-				switch (iMID)
-				{
-					case IDC_BUTTON_PROMPT_CREDENTIALS:
-						PromptCredentials(hwnd);
-						break;
-					case IDC_BUTTON_CLEAR_CREDENTIALS:
-						ClearCredentials(hwnd);
-						break;
-					case IDC_VIEW:
-					{
-						SaveHistory(hwnd);
-						EndDialog(hwnd, 1);
-						break;
-					}
-					default:
-						break;
-				}
+			case IDC_BUTTON_PROMPT_CREDENTIALS:
+				PromptCredentials(hwnd);
+				break;
+			case IDC_BUTTON_CLEAR_CREDENTIALS:
+				ClearCredentials(hwnd);
+				break;
+			case IDC_VIEW:
+			{
+				SaveHistory(hwnd);
+				EndDialog(hwnd, 1);
+				break;
 			}
-			return TRUE;
-		case WM_CLOSE:
-			EndDialog(hwnd, 0);
-			return FALSE;
-		case WM_WINDOWPOSCHANGING:
-			return ValidateInfodict(hwnd);
-		default:
-			return FALSE;
+			default:
+				break;
+			}
+		}
+		if (((HWND)lParam) && (HIWORD(wParam) == EN_KILLFOCUS))
+		{
+			LoadCredentials(hwnd);
+		}
+		return TRUE;
+	case WM_WINDOWPOSCHANGING:
+		return ValidateInfodict(hwnd);
+	case WM_CLOSE:
+		EndDialog(hwnd, 0);
+		return FALSE;
+	default:
+		return FALSE;
 	}
+
 }
 
-BOOL CALLBACK MainDialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+INT_PTR CALLBACK MainDialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
 	HMENU preferencesMenu;
-	DWORD preferencesResult;
+	INT_PTR preferencesResult;
 	switch (message)
 	{
 	case WM_INITDIALOG:
